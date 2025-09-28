@@ -13,6 +13,7 @@ function App() {
   const [location, setLocation] = useState('Unknown Location')
   const [detailedAddress, setDetailedAddress] = useState('Fetching address...')
   const [liveLocationUrl, setLiveLocationUrl] = useState('')
+  const [whatsappStatus, setWhatsappStatus] = useState('')
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const crowdMapRef = useRef(null)
@@ -35,6 +36,36 @@ function App() {
       drawDetections(data.detections)
       drawCrowdMap(data.detections)
       checkThreshold(data.count)
+    })
+    
+    socketRef.current.on('report_sent', (data) => {
+      if (data.success) {
+        console.log('WhatsApp report sent successfully')
+        if (data.type === 'manual_report') {
+          setWhatsappStatus('✅ Manual report sent to WhatsApp!')
+        } else {
+          setWhatsappStatus('✅ Report sent to WhatsApp!')
+        }
+        setTimeout(() => setWhatsappStatus(''), 5000)
+      } else {
+        console.error('Failed to send WhatsApp report:', data.error)
+        setWhatsappStatus('❌ Failed to send WhatsApp report')
+        setTimeout(() => setWhatsappStatus(''), 5000)
+      }
+    })
+    
+    socketRef.current.on('alert_sent', (data) => {
+      if (data.success) {
+        if (data.type === 'auto_report') {
+          setWhatsappStatus(`🚨 Auto-report sent! Count: ${data.count}/${data.threshold}`)
+        } else {
+          setWhatsappStatus('🚨 Alert sent to WhatsApp!')
+        }
+        setTimeout(() => setWhatsappStatus(''), 8000)
+      } else {
+        setWhatsappStatus('❌ Failed to send WhatsApp alert')
+        setTimeout(() => setWhatsappStatus(''), 5000)
+      }
     })
 
     // Get location
@@ -195,6 +226,18 @@ function App() {
         message: `High crowd density detected: ${count} people (threshold: ${threshold})`
       }
       setAlerts(prev => [alert, ...prev.slice(0, 4)])
+      
+      // Send WhatsApp report automatically
+      setWhatsappStatus('📤 Sending automatic WhatsApp report...')
+      socketRef.current?.emit('threshold_alert', {
+        count: count,
+        threshold: threshold,
+        detections: detections,
+        location: {
+          address: detailedAddress,
+          maps_url: liveLocationUrl
+        }
+      })
     }
   }
 
@@ -216,6 +259,12 @@ function App() {
     
     setReports(prev => [report, ...prev.slice(0, 9)])
     generatePDF(report)
+    
+    // Send manual report via WhatsApp
+    setWhatsappStatus('📤 Sending manual report to WhatsApp...')
+    socketRef.current?.emit('send_report', {
+      report: report
+    })
   }
   
   const generatePDF = (report) => {
@@ -425,6 +474,12 @@ function App() {
             </div>
           )}
         </div>
+        
+        {whatsappStatus && (
+          <div className="whatsapp-status">
+            {whatsappStatus}
+          </div>
+        )}
         <div className="threshold-control">
           <label>Threshold: </label>
           <input 

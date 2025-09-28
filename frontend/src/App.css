@@ -120,6 +120,17 @@ canvas {
   margin: 5px 0;
 }
 
+.whatsapp-status {
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 5px;
+  font-weight: bold;
+  text-align: center;
+  background: #e3f2fd;
+  border: 2px solid #2196f3;
+  color: #1976d2;
+}
+
 .alerts {
   background: #ffebee;
   border: 2px solid #f44336;
