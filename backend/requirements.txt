@@ -7,3 +7,4 @@ numpy==1.24.3
 pillow==10.0.1
 twilio==8.10.0
 python-dotenv==1.0.0
+pymongo==4.6.1

@@ -8,9 +8,10 @@ import base64
 import io
 from PIL import Image
 from twilio.rest import Client
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+from pymongo import MongoClient
 
 # Load environment variables
 load_dotenv()
@@ -25,69 +26,62 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_WHATSAPP_FROM = os.getenv('TWILIO_WHATSAPP_FROM')
 TWILIO_WHATSAPP_TO = os.getenv('TWILIO_WHATSAPP_TO')
 
+# MongoDB configuration
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client['crowd_detection']
+detections_col = db['detections']
+alerts_col = db['alerts']
+daily_stats_col = db['daily_stats']
+
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# Load YOLOv8 model
-model = YOLO('yolov8n.pt')
-person_counter = 0
-tracked_persons = {}
+# Load YOLOv8 models
+print("Loading YOLOv8n (fast) for camera...")
+model_fast = YOLO('yolov8n.pt')
+print("Loading YOLOv8x (accurate) for image/video...")
+model_accurate = YOLO('yolov8x.pt')
+print("Models loaded successfully!")
 last_alert_time = 0
-ALERT_COOLDOWN = 60  # 1 minute cooldown for testing
+ALERT_COOLDOWN = 60
+frame_skip_counter = 0
 
 @socketio.on('video_frame')
 def handle_video_frame(data):
-    global person_counter, tracked_persons
+    global detection_history, frame_skip_counter
     try:
-        # Decode image
+        source_type = data.get('source_type', 'camera')
+        
+        # Skip frames for camera only
+        if source_type == 'camera':
+            frame_skip_counter += 1
+            if frame_skip_counter % 2 != 0:  # Process every 2nd frame
+                return
+        
         image_data = data['frame'].split(',')[1]
         image_bytes = base64.b64decode(image_data)
         image = Image.open(io.BytesIO(image_bytes))
-        
-        # Convert to numpy array
         img_array = np.array(image)
         
-        # Run detection
-        results = model(img_array, conf=0.5)
+        # Different processing based on source
+        if source_type == 'camera':
+            current_detections = process_camera_frame(img_array)
+        elif source_type == 'image':
+            current_detections = process_image_frame(img_array)
+        elif source_type == 'video':
+            current_detections = process_video_frame(img_array)
+        else:
+            current_detections = process_camera_frame(img_array)
         
-        current_detections = []
-        for r in results:
-            boxes = r.boxes
-            if boxes is not None:
-                for box in boxes:
-                    if int(box.cls[0]) == 0:  # Person class
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        center_x = (x1 + x2) / 2
-                        center_y = (y1 + y2) / 2
-                        
-                        # Find closest existing person (within 100 pixels)
-                        assigned_id = None
-                        min_distance = 100
-                        
-                        for person_id, (old_x, old_y) in tracked_persons.items():
-                            distance = ((center_x - old_x)**2 + (center_y - old_y)**2)**0.5
-                            if distance < min_distance:
-                                min_distance = distance
-                                assigned_id = person_id
-                        
-                        # If no close person found, create new ID
-                        if assigned_id is None:
-                            person_counter += 1
-                            assigned_id = person_counter
-                        
-                        # Update position
-                        tracked_persons[assigned_id] = (center_x, center_y)
-                        
-                        current_detections.append({
-                            'id': assigned_id,
-                            'bbox': [int(x1), int(y1), int(x2), int(y2)],
-                            'confidence': float(box.conf[0])
-                        })
-        
-        # Remove persons not seen in current frame
-        current_ids = [d['id'] for d in current_detections]
-        tracked_persons = {pid: pos for pid, pos in tracked_persons.items() if pid in current_ids}
-        
-        print(f"Found {len(current_detections)} persons with IDs: {current_ids}")
+        detection_data = {
+            'timestamp': datetime.now(),
+            'count': len(current_detections),
+            'hour': datetime.now().hour,
+            'minute': datetime.now().minute,
+            'date': datetime.now().strftime('%Y-%m-%d')
+        }
+        detections_col.insert_one(detection_data)
+        update_daily_stats(len(current_detections))
         
         emit('detection_result', {
             'count': len(current_detections),
@@ -97,6 +91,69 @@ def handle_video_frame(data):
     except Exception as e:
         print(f"Error: {e}")
         emit('detection_result', {'count': 0, 'detections': []})
+
+def process_camera_frame(img_array):
+    """Process live camera feed - FAST MODEL"""
+    # Resize to 416x416 for maximum speed
+    img_array = cv2.resize(img_array, (416, 416))
+    
+    results = model_fast(img_array, conf=0.4, iou=0.5, classes=[0], max_det=50, verbose=False)
+    
+    detections = []
+    for r in results:
+        boxes = r.boxes
+        if boxes is not None:
+            for i, box in enumerate(boxes):
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                # Scale back to original size
+                detections.append({
+                    'id': i + 1,
+                    'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                    'confidence': float(box.conf[0])
+                })
+    return detections
+
+def process_image_frame(img_array):
+    """Process uploaded image - no tracking, lower confidence - ACCURATE MODEL"""
+    results = model_accurate(img_array, conf=0.1, iou=0.3, classes=[0], max_det=500, agnostic_nms=True, verbose=False)
+    
+    detections = []
+    for r in results:
+        boxes = r.boxes
+        if boxes is not None:
+            for i, box in enumerate(boxes):
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append({
+                    'id': i + 1,
+                    'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                    'confidence': float(box.conf[0])
+                })
+    return detections
+
+def process_video_frame(img_array):
+    """Process uploaded video - tracking with lower confidence - ACCURATE MODEL"""
+    results = model_accurate.track(img_array, conf=0.2, iou=0.4, persist=True, tracker="bytetrack.yaml", classes=[0], max_det=400, verbose=False)
+    
+    detections = []
+    for r in results:
+        boxes = r.boxes
+        if boxes is not None and boxes.id is not None:
+            for box, track_id in zip(boxes, boxes.id):
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append({
+                    'id': int(track_id),
+                    'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                    'confidence': float(box.conf[0])
+                })
+        elif boxes is not None:
+            for i, box in enumerate(boxes):
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                detections.append({
+                    'id': i + 1,
+                    'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                    'confidence': float(box.conf[0])
+                })
+    return detections
 
 def send_whatsapp_report(count, threshold, location_data=None, detections_data=None):
     global last_alert_time
@@ -197,22 +254,94 @@ def send_whatsapp_report(count, threshold, location_data=None, detections_data=N
         print(f"Failed to send WhatsApp HTML report: {e}")
         return False
 
-@socketio.on('threshold_alert')
-def handle_threshold_alert(data):
+def update_daily_stats(count):
+    today = datetime.now().strftime('%Y-%m-%d')
+    daily_stats_col.update_one(
+        {'date': today},
+        {'$push': {'counts': count}, '$setOnInsert': {'alerts': 0}},
+        upsert=True
+    )
+
+@socketio.on('stampede_alert')
+def handle_stampede_alert(data):
+    global alert_history
     count = data.get('count', 0)
-    threshold = data.get('threshold', 5)
+    density = data.get('density', 0)
+    risk_level = data.get('risk_level', 'UNKNOWN')
+    area = data.get('area', 50)
     location_data = data.get('location', {})
     detections_data = data.get('detections', [])
     
-    print(f"Threshold alert received: {count}/{threshold} - Sending full report")
-    success = send_whatsapp_report(count, threshold, location_data, detections_data)
+    alert_data = {
+        'timestamp': datetime.now(),
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'location': location_data.get('address', 'Unknown')[:50],
+        'count': count,
+        'density': float(density),
+        'area': area,
+        'status': risk_level,
+        'action': 'WhatsApp sent'
+    }
+    alerts_col.insert_one(alert_data)
+    
+    # Update daily alert count
+    today = datetime.now().strftime('%Y-%m-%d')
+    daily_stats_col.update_one(
+        {'date': today},
+        {'$inc': {'alerts': 1}},
+        upsert=True
+    )
+    
+    print(f"Stampede alert: {count} people, Density: {density} p/m², Risk: {risk_level}")
+    success = send_stampede_alert(count, density, risk_level, area, location_data, detections_data)
     
     emit('alert_sent', {
         'success': success,
         'count': count,
-        'threshold': threshold,
-        'type': 'auto_report'
+        'density': density,
+        'risk_level': risk_level,
+        'type': 'stampede_alert'
     })
+
+def send_stampede_alert(count, density, risk_level, area, location_data=None, detections_data=None):
+    global last_alert_time
+    current_time = datetime.now().timestamp()
+    
+    if current_time - last_alert_time < ALERT_COOLDOWN:
+        return False
+    
+    try:
+        message_text = f"""
+🚨 *STAMPEDE RISK ALERT*
+
+⚠️ *Risk Level:* {risk_level}
+👥 *People Count:* {count}
+📊 *Crowd Density:* {density} people/m²
+📐 *Coverage Area:* {area} m²
+🕐 *Time:* {datetime.now().strftime('%H:%M:%S')}
+📍 *Location:* {location_data.get('address', 'Unknown')[:50] if location_data else 'Unknown'}
+
+🔴 *Safety Guidelines:*
+- CRITICAL (>6 p/m²): Immediate evacuation
+- DANGEROUS (4-6 p/m²): Stop entry, manage flow
+- CROWDED (2-4 p/m²): Monitor closely
+
+⚠️ *Immediate action required!*
+        """
+        
+        message = client.messages.create(
+            body=message_text,
+            from_=TWILIO_WHATSAPP_FROM,
+            to=TWILIO_WHATSAPP_TO
+        )
+        
+        last_alert_time = current_time
+        print(f"WhatsApp stampede alert sent: {message.sid}")
+        return True
+        
+    except Exception as e:
+        print(f"Failed to send WhatsApp alert: {e}")
+        return False
 
 @socketio.on('send_report')
 def handle_send_report(data):
@@ -247,6 +376,111 @@ def handle_send_report(data):
     except Exception as e:
         print(f"Failed to send manual WhatsApp report: {e}")
         emit('report_sent', {'success': False, 'error': str(e)})
+
+@socketio.on('get_analytics')
+def handle_get_analytics():
+    detection_records = list(detections_col.find().sort('timestamp', -1).limit(1000))
+    
+    hourly_data = {}
+    time_series = []
+    
+    for record in detection_records:
+        hour = record['hour']
+        hourly_data[hour] = hourly_data.get(hour, []) + [record['count']]
+        time_series.append({'time': record['timestamp'].isoformat(), 'count': record['count']})
+    
+    hourly_avg = {h: sum(counts)/len(counts) for h, counts in hourly_data.items()}
+    peak_hour = max(hourly_avg.items(), key=lambda x: x[1]) if hourly_avg else (0, 0)
+    
+    peak_time_range = find_peak_time_range(detection_records)
+    
+    recent_counts = [r['count'] for r in detection_records[:50]]
+    
+    emit('analytics_data', {
+        'hourly': hourly_avg,
+        'peak_hour': peak_hour[0],
+        'peak_count': round(peak_hour[1], 1),
+        'peak_time_range': peak_time_range,
+        'trend': recent_counts,
+        'time_series': time_series[:100],
+        'total_detections': len(detection_records),
+        'avg_count': sum(recent_counts)/len(recent_counts) if recent_counts else 0
+    })
+
+def find_peak_time_range(records):
+    if len(records) < 10:
+        return {'start': '00:00', 'end': '00:00', 'avg': 0}
+    
+    windows = {}
+    for record in records:
+        hour = record['hour']
+        minute = record['minute']
+        window = f"{hour:02d}:{(minute//15)*15:02d}"
+        windows[window] = windows.get(window, []) + [record['count']]
+    
+    if not windows:
+        return {'start': '00:00', 'end': '00:00', 'avg': 0}
+    
+    peak_window = max(windows.items(), key=lambda x: sum(x[1])/len(x[1]))
+    start_time = peak_window[0]
+    hour, minute = map(int, start_time.split(':'))
+    end_minute = minute + 15
+    end_hour = hour + (end_minute // 60)
+    end_minute = end_minute % 60
+    
+    return {
+        'start': start_time,
+        'end': f"{end_hour:02d}:{end_minute:02d}",
+        'avg': round(sum(peak_window[1])/len(peak_window[1]), 1)
+    }
+
+@socketio.on('get_daily_report')
+def handle_get_daily_report():
+    today = datetime.now().strftime('%Y-%m-%d')
+    report = generate_daily_report(today)
+    emit('daily_report', report)
+
+@socketio.on('get_weekly_report')
+def handle_get_weekly_report():
+    reports = []
+    for i in range(7):
+        date = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+        reports.append(generate_daily_report(date))
+    emit('weekly_report', {'reports': reports})
+
+def generate_daily_report(date):
+    day_records = list(detections_col.find({'date': date}))
+    counts = [r['count'] for r in day_records]
+    
+    stats = daily_stats_col.find_one({'date': date}) or {'counts': [], 'alerts': 0}
+    all_counts = counts + stats.get('counts', [])
+    
+    return {
+        'date': date,
+        'peak_crowd': max(all_counts) if all_counts else 0,
+        'avg_crowd': round(sum(all_counts)/len(all_counts), 1) if all_counts else 0,
+        'total_alerts': stats.get('alerts', 0),
+        'total_detections': len(day_records)
+    }
+
+@socketio.on('get_alerts')
+def handle_get_alerts():
+    alerts = list(alerts_col.find().sort('timestamp', -1).limit(50))
+    alerts_data = [{
+        'time': a['time'],
+        'location': a['location'],
+        'count': a['count'],
+        'density': a.get('density', 0),
+        'status': a['status'],
+        'action': a['action']
+    } for a in alerts]
+    emit('alerts_data', {'alerts': alerts_data})
+
+@socketio.on('reset_counter')
+def handle_reset_counter():
+    global frame_skip_counter
+    frame_skip_counter = 0
+    print('Frame counter reset')
 
 @socketio.on('connect')
 def handle_connect():
