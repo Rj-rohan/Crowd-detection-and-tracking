@@ -36,26 +36,41 @@ daily_stats_col = db['daily_stats']
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# Load YOLOv8 models
-print("Loading YOLOv8n (fast) for camera...")
-model_fast = YOLO('yolov8n.pt')
-print("Loading YOLOv8x (accurate) for image/video...")
-model_accurate = YOLO('yolov8x.pt')
-print("Models loaded successfully!")
+# Load YOLOv8 model
+print("Loading YOLOv8x (accurate model)...")
+model = YOLO('yolov8x.pt')
+model.fuse()  # Optimize model
+print("Model loaded successfully!")
+
+# Warmup model (run dummy inference)
+print("Warming up model...")
+import numpy as np
+dummy_image = np.zeros((640, 640, 3), dtype=np.uint8)
+model(dummy_image, verbose=False)  # First inference is always slow
+print("Model ready for detection!")
+
 last_alert_time = 0
 ALERT_COOLDOWN = 60
-frame_skip_counter = 0
+frame_skip_counter = {}
+last_detections = {}
+tracker_state = {}  # Store tracker state per client
 
 @socketio.on('video_frame')
 def handle_video_frame(data):
-    global detection_history, frame_skip_counter
+    global detection_history, frame_skip_counter, last_detections
     try:
         source_type = data.get('source_type', 'camera')
+        client_id = request.sid
+        
+        # Initialize counter for this client
+        if client_id not in frame_skip_counter:
+            frame_skip_counter[client_id] = 0
         
         # Skip frames for camera only
         if source_type == 'camera':
-            frame_skip_counter += 1
-            if frame_skip_counter % 2 != 0:  # Process every 2nd frame
+            frame_skip_counter[client_id] += 1
+            if frame_skip_counter[client_id] % 2 != 0:
+                # Skip processing but don't return cached data
                 return
         
         image_data = data['frame'].split(',')[1]
@@ -65,13 +80,13 @@ def handle_video_frame(data):
         
         # Different processing based on source
         if source_type == 'camera':
-            current_detections = process_camera_frame(img_array)
+            current_detections = process_camera_frame(img_array, client_id)
         elif source_type == 'image':
             current_detections = process_image_frame(img_array)
         elif source_type == 'video':
             current_detections = process_video_frame(img_array)
         else:
-            current_detections = process_camera_frame(img_array)
+            current_detections = process_camera_frame(img_array, client_id)
         
         detection_data = {
             'timestamp': datetime.now(),
@@ -83,39 +98,58 @@ def handle_video_frame(data):
         detections_col.insert_one(detection_data)
         update_daily_stats(len(current_detections))
         
-        emit('detection_result', {
+        result = {
             'count': len(current_detections),
             'detections': current_detections
-        })
+        }
+        
+        # Cache result for skipped frames
+        last_detections[client_id] = result
+        
+        emit('detection_result', result)
         
     except Exception as e:
         print(f"Error: {e}")
         emit('detection_result', {'count': 0, 'detections': []})
 
-def process_camera_frame(img_array):
-    """Process live camera feed - FAST MODEL"""
-    # Resize to 416x416 for maximum speed
-    img_array = cv2.resize(img_array, (416, 416))
+def process_camera_frame(img_array, client_id=None):
+    """Process live camera feed - Fast instant removal"""
+    # Resize to 640x640 for better accuracy
+    img_array = cv2.resize(img_array, (640, 640))
     
-    results = model_fast(img_array, conf=0.4, iou=0.5, classes=[0], max_det=50, verbose=False)
+    # High confidence for fast removal - only detect very clear persons
+    results = model(img_array, conf=0.7, iou=0.5, classes=[0], max_det=100, verbose=False)
     
     detections = []
     for r in results:
         boxes = r.boxes
-        if boxes is not None:
+        if boxes is not None and len(boxes) > 0:
             for i, box in enumerate(boxes):
+                confidence = float(box.conf[0])
+                
+                # AGGRESSIVE FILTER: Only accept high confidence
+                if confidence < 0.7:
+                    continue
+                    
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                # Scale back to original size
+                
+                # Filter out small boxes (likely false positives)
+                box_width = x2 - x1
+                box_height = y2 - y1
+                if box_width < 40 or box_height < 60:
+                    continue
+                
                 detections.append({
                     'id': i + 1,
                     'bbox': [int(x1), int(y1), int(x2), int(y2)],
-                    'confidence': float(box.conf[0])
+                    'confidence': confidence
                 })
+    
     return detections
 
 def process_image_frame(img_array):
-    """Process uploaded image - no tracking, lower confidence - ACCURATE MODEL"""
-    results = model_accurate(img_array, conf=0.1, iou=0.3, classes=[0], max_det=500, agnostic_nms=True, verbose=False)
+    """Process uploaded image - YOLOv8x"""
+    results = model(img_array, conf=0.1, iou=0.3, classes=[0], max_det=500, agnostic_nms=True, verbose=False)
     
     detections = []
     for r in results:
@@ -131,8 +165,8 @@ def process_image_frame(img_array):
     return detections
 
 def process_video_frame(img_array):
-    """Process uploaded video - tracking with lower confidence - ACCURATE MODEL"""
-    results = model_accurate.track(img_array, conf=0.2, iou=0.4, persist=True, tracker="bytetrack.yaml", classes=[0], max_det=400, verbose=False)
+    """Process uploaded video - YOLOv8x with tracking"""
+    results = model.track(img_array, conf=0.2, iou=0.4, persist=True, tracker="bytetrack.yaml", classes=[0], max_det=400, verbose=False)
     
     detections = []
     for r in results:
@@ -478,13 +512,31 @@ def handle_get_alerts():
 
 @socketio.on('reset_counter')
 def handle_reset_counter():
-    global frame_skip_counter
-    frame_skip_counter = 0
-    print('Frame counter reset')
+    global frame_skip_counter, last_detections, tracker_state
+    client_id = request.sid
+    if client_id in frame_skip_counter:
+        del frame_skip_counter[client_id]
+    if client_id in last_detections:
+        del last_detections[client_id]
+    if client_id in tracker_state:
+        del tracker_state[client_id]
+    
+    # Reset YOLO tracker safely
+    try:
+        if hasattr(model, 'predictor') and hasattr(model.predictor, 'trackers'):
+            model.predictor.trackers = []
+    except Exception as e:
+        print(f'Tracker reset warning: {e}')
+    
+    print(f'Frame counter and tracker reset for client {client_id}')
+
+@socketio.on('check_model_ready')
+def handle_check_model_ready():
+    emit('model_ready', {'ready': True})
 
 @socketio.on('connect')
 def handle_connect():
     print('Client connected')
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, port=5000)
+    socketio.run(app, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

@@ -6,6 +6,7 @@ function Dashboard() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [sourceType, setSourceType] = useState('camera')
+  const [isModelReady, setIsModelReady] = useState(true)
   const [personCount, setPersonCount] = useState(0)
   const [detections, setDetections] = useState([])
   const [density, setDensity] = useState(0)
@@ -35,6 +36,16 @@ function Dashboard() {
   useEffect(() => {
     socketRef.current = io('http://localhost:5000')
     
+    socketRef.current.on('connect', () => {
+      console.log('Connected to server')
+      socketRef.current.emit('check_model_ready')
+    })
+    
+    socketRef.current.on('model_ready', () => {
+      console.log('Model is ready!')
+      setIsModelReady(true)
+    })
+    
     socketRef.current.on('detection_result', (data) => {
       setPersonCount(data.count)
       setDetections(data.detections)
@@ -46,8 +57,8 @@ function Dashboard() {
       // Determine risk level
       let risk = 'SAFE'
       if (densityValue > 6) risk = 'CRITICAL'
-      else if (densityValue > 4) risk = 'DANGEROUS'
-      else if (densityValue > 2) risk = 'CROWDED'
+      else if (densityValue > 0.50) risk = 'DANGEROUS'
+      else if (densityValue > 0.3) risk = 'CROWDED'
       setRiskLevel(risk)
       
       drawDetections(data.detections)
@@ -166,13 +177,13 @@ function Dashboard() {
     if (canvas.width > 0 && canvas.height > 0) {
       ctx.drawImage(videoRef.current, 0, 0)
       socketRef.current?.emit('video_frame', { 
-        frame: canvas.toDataURL('image/jpeg', 0.5),
+        frame: canvas.toDataURL('image/jpeg', 0.7),
         source_type: sourceType
       })
     }
     
     if (streamingRef.current || sourceType === 'video') {
-      setTimeout(() => sendFrame(), sourceType === 'camera' ? 1000 : 500)
+      setTimeout(() => sendFrame(), sourceType === 'camera' ? 1500 : 500)
     }
   }
 
@@ -344,11 +355,13 @@ function Dashboard() {
         <div className="panel live-feed">
           <h2>📹 Live Camera Feed</h2>
           <div className="controls">
-            <button onClick={startCamera} disabled={isStreaming || isProcessing}>▶ Start Camera</button>
+            <button onClick={startCamera} disabled={isStreaming || isProcessing || !isModelReady}>
+              {!isModelReady ? '⏳ Loading Model...' : '▶ Start Camera'}
+            </button>
             <button onClick={stopCamera} disabled={!isStreaming && !isProcessing}>⏹ Stop</button>
             <label className="upload-btn">
               📁 Upload Image/Video
-              <input type="file" accept="image/*,video/*" onChange={uploadFile} style={{display: 'none'}} />
+              <input type="file" accept="image/*,video/*" onChange={uploadFile} style={{display: 'none'}} disabled={!isModelReady} />
             </label>
             <label>Coverage Area (m²): 
               <input type="number" value={coverageArea} onChange={(e) => setCoverageArea(+e.target.value)} min="10" max="500" />

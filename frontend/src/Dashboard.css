@@ -1,57 +1,125 @@
 .dashboard {
   min-height: 100vh;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 20px;
+  padding: 10px;
+}
+
+@media (min-width: 768px) {
+  .dashboard {
+    padding: 20px;
+  }
 }
 
 .dashboard-header {
   background: white;
-  padding: 20px;
+  padding: 15px;
   border-radius: 10px;
-  margin-bottom: 20px;
+  margin-bottom: 15px;
   box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+@media (min-width: 768px) {
+  .dashboard-header {
+    padding: 20px;
+    margin-bottom: 20px;
+  }
 }
 
 .dashboard-header h1 {
   margin: 0 0 15px 0;
   color: #333;
+  font-size: 20px;
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  .dashboard-header h1 {
+    font-size: 28px;
+    text-align: left;
+  }
 }
 
 .header-stats {
-  display: flex;
-  gap: 20px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+@media (min-width: 768px) {
+  .header-stats {
+    display: flex;
+    gap: 20px;
+  }
 }
 
 .stat-box {
   display: flex;
   flex-direction: column;
-  padding: 15px 25px;
+  padding: 12px 15px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-radius: 8px;
   color: white;
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  .stat-box {
+    padding: 15px 25px;
+  }
 }
 
 .stat-value {
-  font-size: 32px;
+  font-size: 24px;
   font-weight: bold;
 }
 
+@media (min-width: 768px) {
+  .stat-value {
+    font-size: 32px;
+  }
+}
+
 .stat-label {
-  font-size: 12px;
+  font-size: 11px;
   opacity: 0.9;
+}
+
+@media (min-width: 768px) {
+  .stat-label {
+    font-size: 12px;
+  }
 }
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 20px;
+  grid-template-columns: 1fr;
+  gap: 15px;
+}
+
+@media (min-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: 1.5fr 1fr;
+    gap: 20px;
+  }
+}
+
+@media (min-width: 1400px) {
+  .dashboard-grid {
+    grid-template-columns: 2fr 1fr;
+  }
 }
 
 .panel {
   background: white;
-  padding: 20px;
+  padding: 15px;
   border-radius: 10px;
   box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+@media (min-width: 768px) {
+  .panel {
+    padding: 20px;
+  }
 }
 
 .panel h2 {
@@ -59,27 +127,58 @@
   color: #333;
   border-bottom: 2px solid #667eea;
   padding-bottom: 10px;
+  font-size: 18px;
+}
+
+@media (min-width: 768px) {
+  .panel h2 {
+    font-size: 20px;
+  }
 }
 
 .live-feed {
-  grid-row: span 2;
+  grid-row: span 1;
+}
+
+@media (min-width: 1024px) {
+  .live-feed {
+    grid-row: span 2;
+  }
 }
 
 .controls {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-bottom: 15px;
   align-items: center;
 }
 
+@media (min-width: 768px) {
+  .controls {
+    gap: 10px;
+  }
+}
+
 .controls button {
-  padding: 10px 20px;
+  padding: 8px 15px;
   border: none;
   border-radius: 5px;
   background: #667eea;
   color: white;
   cursor: pointer;
   font-weight: bold;
+  font-size: 12px;
+  flex: 1;
+  min-width: 100px;
+}
+
+@media (min-width: 768px) {
+  .controls button {
+    padding: 10px 20px;
+    font-size: 14px;
+    flex: 0;
+  }
 }
 
 .controls button:disabled {
@@ -88,13 +187,24 @@
 }
 
 .upload-btn {
-  padding: 10px 20px;
+  padding: 8px 15px;
   background: #28a745;
   color: white;
   border-radius: 5px;
   cursor: pointer;
   font-weight: bold;
   border: none;
+  font-size: 12px;
+  flex: 1;
+  min-width: 100px;
+}
+
+@media (min-width: 768px) {
+  .upload-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    flex: 0;
+  }
 }
 
 .upload-btn:hover {
@@ -104,14 +214,32 @@
 .controls label {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
+  font-size: 12px;
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .controls label {
+    font-size: 14px;
+    width: auto;
+  }
 }
 
 .controls input {
   width: 60px;
-  padding: 8px;
+  padding: 6px;
   border: 1px solid #ddd;
   border-radius: 4px;
+  font-size: 12px;
+}
+
+@media (min-width: 768px) {
+  .controls input {
+    width: 70px;
+    padding: 8px;
+    font-size: 14px;
+  }
 }
 
 .video-wrapper {
@@ -123,16 +251,30 @@
   display: flex;
   justify-content: center;
   align-items: center;
+  min-height: 250px;
+}
+
+@media (min-width: 768px) {
+  .video-wrapper {
+    min-height: 400px;
+  }
 }
 
 .video-wrapper video,
 .video-wrapper img {
   max-width: 100%;
-  max-height: 600px;
+  max-height: 400px;
   width: auto;
   height: auto;
   display: block;
   object-fit: contain;
+}
+
+@media (min-width: 768px) {
+  .video-wrapper video,
+  .video-wrapper img {
+    max-height: 600px;
+  }
 }
 
 .video-wrapper canvas {
@@ -148,27 +290,48 @@
   padding: 10px;
   background: #f5f5f5;
   border-radius: 5px;
+  font-size: 12px;
+}
+
+@media (min-width: 768px) {
+  .location-info {
+    font-size: 14px;
+  }
 }
 
 .location-info p {
   margin: 0 0 5px 0;
+  word-break: break-word;
 }
 
 .location-info a {
   color: #667eea;
   text-decoration: none;
+  word-break: break-all;
 }
 
 .analytics {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 15px;
+}
+
+@media (min-width: 768px) {
+  .analytics {
+    gap: 20px;
+  }
 }
 
 .chart-section h3 {
-  font-size: 14px;
+  font-size: 13px;
   margin: 0 0 10px 0;
   color: #666;
+}
+
+@media (min-width: 768px) {
+  .chart-section h3 {
+    font-size: 14px;
+  }
 }
 
 .trend-chart {
@@ -196,26 +359,47 @@
 
 .simple-line-chart {
   background: #f9f9f9;
-  padding: 20px;
+  padding: 15px;
   border-radius: 8px;
+  overflow-x: auto;
+}
+
+@media (min-width: 768px) {
+  .simple-line-chart {
+    padding: 20px;
+  }
 }
 
 .simple-line-chart svg {
   display: block;
+  min-width: 300px;
+  width: 100%;
 }
 
 .chart-labels {
   display: flex;
   justify-content: space-between;
   margin-top: 10px;
-  font-size: 12px;
+  font-size: 10px;
   color: #666;
+}
+
+@media (min-width: 768px) {
+  .chart-labels {
+    font-size: 12px;
+  }
 }
 
 .current-label {
   font-weight: bold;
   color: #667eea;
-  font-size: 14px;
+  font-size: 12px;
+}
+
+@media (min-width: 768px) {
+  .current-label {
+    font-size: 14px;
+  }
 }
 
 .hourly-bars {
@@ -336,13 +520,21 @@
 
 .report-btn {
   width: 100%;
-  padding: 10px;
+  padding: 8px;
   background: #667eea;
   color: white;
   border: none;
   border-radius: 5px;
   cursor: pointer;
   font-weight: bold;
+  font-size: 12px;
+}
+
+@media (min-width: 768px) {
+  .report-btn {
+    padding: 10px;
+    font-size: 14px;
+  }
 }
 
 .report-btn:hover {
@@ -351,26 +543,56 @@
 
 .weekly-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  gap: 8px;
+}
+
+@media (min-width: 768px) {
+  .weekly-grid {
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    gap: 10px;
+  }
 }
 
 .week-day {
   background: #f9f9f9;
-  padding: 10px;
+  padding: 8px;
   border-radius: 5px;
   text-align: center;
-  font-size: 12px;
+  font-size: 11px;
+}
+
+@media (min-width: 768px) {
+  .week-day {
+    padding: 10px;
+    font-size: 12px;
+  }
 }
 
 .day-date {
   font-weight: bold;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   color: #667eea;
+  font-size: 11px;
+}
+
+@media (min-width: 768px) {
+  .day-date {
+    margin-bottom: 8px;
+    font-size: 12px;
+  }
 }
 
 .day-stat {
-  margin: 4px 0;
+  margin: 3px 0;
+  font-size: 10px;
+}
+
+@media (min-width: 768px) {
+  .day-stat {
+    margin: 4px 0;
+    font-size: 11px;
+  }
 }
 
 .alert-stat {
@@ -410,37 +632,70 @@
 
 .chart-section canvas {
   width: 100%;
+  max-width: 100%;
+  height: auto;
   border-radius: 8px;
   background: #1a1a2e;
 }
 
 .alert-history {
-  grid-column: span 2;
+  grid-column: span 1;
+}
+
+@media (min-width: 1024px) {
+  .alert-history {
+    grid-column: span 2;
+  }
 }
 
 .alert-table {
   overflow-x: auto;
-  max-height: 400px;
+  max-height: 300px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (min-width: 768px) {
+  .alert-table {
+    max-height: 400px;
+  }
 }
 
 .alert-table table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 600px;
 }
 
 .alert-table th {
   background: #667eea;
   color: white;
-  padding: 12px;
+  padding: 10px 8px;
   text-align: left;
   position: sticky;
   top: 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (min-width: 768px) {
+  .alert-table th {
+    padding: 12px;
+    font-size: 14px;
+  }
 }
 
 .alert-table td {
-  padding: 10px 12px;
+  padding: 8px;
   border-bottom: 1px solid #eee;
+  font-size: 11px;
+}
+
+@media (min-width: 768px) {
+  .alert-table td {
+    padding: 10px 12px;
+    font-size: 13px;
+  }
 }
 
 .alert-table tr:hover {

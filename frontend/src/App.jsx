@@ -147,38 +147,60 @@ function App() {
 
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 }
+        } 
+      })
       videoRef.current.srcObject = stream
       setIsStreaming(true)
-      setStatus('Camera started')
+      setStatus('🎥 Camera started - Real-time detection active')
       
-      setTimeout(() => {
-        sendTestFrame()
-      }, 3000)
+      // Wait for video to be ready, then start continuous detection
+      videoRef.current.onloadedmetadata = () => {
+        console.log('Camera ready, starting real-time detection...')
+        startRealTimeDetection()
+      }
       
     } catch (err) {
       setStatus('Camera error: ' + err.message)
     }
   }
 
-  const sendTestFrame = () => {
+  const startRealTimeDetection = () => {
     const video = videoRef.current
-    if (!video) return
+    if (!video || !isStreaming) return
     
     const canvas = document.createElement('canvas')
     const ctx = canvas.getContext('2d')
     
-    canvas.width = video.videoWidth || 640
-    canvas.height = video.videoHeight || 480
-    ctx.drawImage(video, 0, 0)
+    // Capture and send frames continuously
+    const captureFrame = () => {
+      if (!isStreaming || !video.srcObject) {
+        console.log('Detection stopped')
+        return
+      }
+      
+      canvas.width = video.videoWidth || 640
+      canvas.height = video.videoHeight || 480
+      ctx.drawImage(video, 0, 0)
+      
+      const frameData = canvas.toDataURL('image/jpeg', 0.7)
+      socketRef.current?.emit('video_frame', { 
+        frame: frameData,
+        source_type: 'camera'
+      })
+      
+      setStatus(`🔴 LIVE - Detecting... (${personCount} people)`)
+      
+      // Continue capturing at ~10 FPS for real-time detection
+      setTimeout(captureFrame, 100)
+    }
     
-    const frameData = canvas.toDataURL('image/jpeg', 0.8)
-    socketRef.current?.emit('video_frame', { frame: frameData })
-    
-    setStatus('Frame sent to server')
-    console.log('Test frame sent!')
-    
-    setTimeout(sendTestFrame, 3000)
+    // Start the continuous loop
+    captureFrame()
   }
 
   const drawDetections = (detections) => {
@@ -374,7 +396,7 @@ function App() {
 
   const drawCrowdMap = (detections) => {
     const canvas = crowdMapRef.current
-    if (!canvas) return
+    if (!canvas || !detections || detections.length === 0) return
 
     const ctx = canvas.getContext('2d')
     ctx.clearRect(0, 0, 320, 240)
@@ -399,12 +421,21 @@ function App() {
     ctx.strokeRect(0, 0, 320, 240)
     
     detections.forEach((detection) => {
+      if (!detection.bbox || detection.bbox.length !== 4) return
+      
       const [x1, y1, x2, y2] = detection.bbox
+      
+      // Validate coordinates
+      if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) return
+      
       const centerX = (x1 + x2) / 2
       const centerY = (y1 + y2) / 2
       
       const mapX = (centerX / 640) * 320
       const mapY = (centerY / 480) * 240
+      
+      // Validate map coordinates
+      if (isNaN(mapX) || isNaN(mapY)) return
       
       ctx.fillStyle = detections.length >= threshold ? '#ff0000' : '#ff6600'
       ctx.beginPath()
@@ -433,8 +464,9 @@ function App() {
     setIsStreaming(false)
     setPersonCount(0)
     setDetections([])
-    setStatus('Camera stopped')
+    setStatus('⏸️ Camera stopped - Detection inactive')
     
+    // Clear canvases
     const canvas = canvasRef.current
     const crowdCanvas = crowdMapRef.current
     if (canvas) {
@@ -445,6 +477,9 @@ function App() {
       const ctx = crowdCanvas.getContext('2d')
       ctx.clearRect(0, 0, 320, 240)
     }
+    
+    // Reset socket to stop receiving detections
+    socketRef.current?.emit('reset_counter')
   }
 
   return (
@@ -460,8 +495,11 @@ function App() {
         </button>
       </div>
 
-      <div className="stats">
-        <h2>Status: {status}</h2>
+      <div className={`stats ${isStreaming ? 'live' : ''}`}>
+        <h2>
+          {isStreaming && <span className="live-indicator"></span>}
+          Status: {status}
+        </h2>
         <h2>People Count: {personCount}</h2>
         <div className="location-info">
           <div><strong>GPS:</strong> {location}</div>
