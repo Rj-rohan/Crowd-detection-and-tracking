@@ -3,8 +3,9 @@ import './Dashboard.css'
 
 function Dashboard() {
   const [personCount, setPersonCount]     = useState(0)  // kept for report generation
-  const [densityCount, setDensityCount]   = useState(0)
-  const [densityHeatmap, setDensityHeatmap] = useState(null)
+  const [behaviour, setBehaviour]         = useState({ label: 'UNKNOWN', conf: 0 })
+  const [videoMode, setVideoMode]          = useState(false)
+  const [videoStatus, setVideoStatus]      = useState('')
   const [detections, setDetections]       = useState([])  // kept for report generation
   const [riskLevel]                       = useState('CLEAR')  // display via DOM ref
   const [analytics, setAnalytics]         = useState({ hourly:{}, trend:[], peak_hour:0, avg_count:0, peak_count:0, peak_time_range:{} })
@@ -18,13 +19,17 @@ function Dashboard() {
   const [time, setTime]                   = useState(new Date().toLocaleTimeString())
   const [threshold, setThreshold]         = useState(10)
   const [paused, setPaused]               = useState(false)
+  const [cameraOn, setCameraOn]            = useState(false)
 
   const canvasRef    = useRef(null)
   const overlayRef   = useRef(null)
   const heatmapRef   = useRef(null)
+  const videoWsRef   = useRef(null)
+  const fileInputRef = useRef(null)
   const cameraWsRef  = useRef(null)
   const dataWsRef    = useRef(null)
   const pausedRef    = useRef(false)
+  const cameraOnRef  = useRef(false)
   const fpsRef       = useRef({ count: 0, last: performance.now() })
   const thresholdRef = useRef(10)
   // DOM refs for per-frame updates (avoids React re-renders)
@@ -39,10 +44,10 @@ function Dashboard() {
   const detHeaderRef = useRef(null)
 
   useEffect(() => { thresholdRef.current = threshold }, [threshold])
+  useEffect(() => { cameraOnRef.current = cameraOn }, [cameraOn])
 
   useEffect(() => {
     const tick = setInterval(() => setTime(new Date().toLocaleTimeString()), 1000)
-    connectCamera()
     connectData()
     getLocation()
     return () => {
@@ -53,12 +58,29 @@ function Dashboard() {
   }, [])
 
   // ── Camera WebSocket ──────────────────────────────────────────────────────
+  const startCamera = () => {
+    setCameraOn(true)
+    connectCamera()
+  }
+
+  const stopCamera = () => {
+    setCameraOn(false)
+    cameraWsRef.current?.close()
+    cameraWsRef.current = null
+    setConnected(false)
+    if (fpsDomRef.current) fpsDomRef.current.textContent = 'OFFLINE'
+  }
+
   const connectCamera = () => {
     const ws = new WebSocket('ws://localhost:5000/ws')
     cameraWsRef.current = ws
 
     ws.onopen  = () => setConnected(true)
-    ws.onclose = () => { setConnected(false); setTimeout(connectCamera, 3000) }
+    ws.onclose = () => {
+      setConnected(false)
+      // only auto-reconnect if camera is still supposed to be on
+      if (cameraOnRef.current) setTimeout(connectCamera, 3000)
+    }
     ws.onerror = () => setConnected(false)
 
     ws.onmessage = (e) => {
@@ -101,9 +123,8 @@ function Dashboard() {
           : dets.map(d => `<div class="ddet-row"><span class="ddet-id">ID ${d.id}</span><div class="ddet-bar-wrap"><div class="ddet-bar" style="width:${d.conf*100}%"></div></div><span class="ddet-pct">${(d.conf*100).toFixed(0)}%</span></div>`).join('')
       }
 
-      // Only update React state for slow-changing data
-      if (data.density_heatmap) setDensityHeatmap(`data:image/jpeg;base64,${data.density_heatmap}`)
-      if (data.density_count !== undefined) setDensityCount(data.density_count)
+      // Behaviour update
+      if (data.behaviour) setBehaviour({ label: data.behaviour, conf: data.behaviour_conf || 0 })
 
       // Draw frame
       const img = new Image()
@@ -227,6 +248,81 @@ function Dashboard() {
     }, () => setDetailedAddress('Location unavailable'))
   }
 
+  const handleVideoUpload = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    setVideoMode(true)
+    setVideoStatus('Uploading...')
+
+    // Stop live camera, don't auto-reconnect
+    cameraOnRef.current = false
+    cameraWsRef.current?.close()
+    cameraWsRef.current = null
+    videoWsRef.current?.close()
+
+    const ws = new WebSocket('ws://localhost:5000/ws/video')
+    videoWsRef.current = ws
+
+    ws.onopen = () => {
+      setVideoStatus('Processing...')
+      file.arrayBuffer().then(buf => ws.send(buf))
+    }
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data)
+      if (data.done) { setVideoStatus('Done ✅'); return }
+
+      const dets  = data.detections || []
+      const count = data.count || 0
+
+      if (countDomRef.current)  countDomRef.current.textContent  = count
+      if (countStatRef.current) countStatRef.current.textContent = count
+      if (detHeaderRef.current) detHeaderRef.current.textContent = `👥 Active Detections (${count})`
+      if (fpsDomRef.current)    fpsDomRef.current.textContent    = `VIDEO · ${count} people`
+      if (data.behaviour) setBehaviour({ label: data.behaviour, conf: data.behaviour_conf || 0 })
+
+      const r = count === 0 ? 'CLEAR'
+        : count < thresholdRef.current * 0.4  ? 'LOW'
+        : count < thresholdRef.current * 0.75 ? 'MEDIUM'
+        : count < thresholdRef.current        ? 'HIGH' : 'CRITICAL'
+      const rc = { CLEAR:'#00e5ff', LOW:'#00ff88', MEDIUM:'#ffaa00', HIGH:'#ff6600', CRITICAL:'#ff3c3c' }[r]
+      const pct = { CLEAR:0, LOW:20, MEDIUM:50, HIGH:75, CRITICAL:100 }[r]
+      if (riskDomRef.current)   { riskDomRef.current.textContent = r; riskDomRef.current.style.color = rc }
+      if (riskDom2Ref.current)  { riskDom2Ref.current.textContent = r; riskDom2Ref.current.style.color = rc }
+      if (riskBarRef.current)   { riskBarRef.current.style.width = pct+'%'; riskBarRef.current.style.background = rc }
+      if (riskCountRef.current)  riskCountRef.current.textContent = `${count} / ${thresholdRef.current} threshold`
+
+      if (detListRef.current) {
+        detListRef.current.innerHTML = dets.length === 0
+          ? '<div class="dno-data">No detections</div>'
+          : dets.map(d => `<div class="ddet-row"><span class="ddet-id">ID ${d.id}</span><div class="ddet-bar-wrap"><div class="ddet-bar" style="width:${d.conf*100}%"></div></div><span class="ddet-pct">${(d.conf*100).toFixed(0)}%</span></div>`).join('')
+      }
+
+      const img = new Image()
+      img.onload = () => {
+        const c = canvasRef.current
+        if (!c) return
+        c.width = img.naturalWidth; c.height = img.naturalHeight
+        c.getContext('2d').drawImage(img, 0, 0)
+        drawOverlay(dets, img.naturalWidth, img.naturalHeight)
+        drawHeatmap(dets, img.naturalWidth, img.naturalHeight)
+      }
+      img.src = `data:image/jpeg;base64,${data.frame}`
+    }
+    ws.onclose = () => { setVideoStatus(v => v === 'Processing...' ? 'Stopped' : v) }
+    // reset file input so same file can be re-uploaded
+    e.target.value = ''
+  }
+
+  const stopVideo = () => {
+    videoWsRef.current?.close()
+    videoWsRef.current = null
+    setVideoMode(false)
+    setVideoStatus('')
+    setBehaviour({ label: 'UNKNOWN', conf: 0 })
+    if (fpsDomRef.current) fpsDomRef.current.textContent = cameraOn ? 'LIVE · 0 FPS' : 'OFFLINE'
+    if (cameraOn) connectCamera()
+  }
+
   const togglePause = () => {
     pausedRef.current = !pausedRef.current
     setPaused(pausedRef.current)
@@ -236,7 +332,7 @@ function Dashboard() {
     const canvas = canvasRef.current
     const snap   = canvas ? canvas.toDataURL('image/jpeg', 0.8) : null
     const isAlert = personCount >= threshold
-    const html = `<!DOCTYPE html><html><head><title>Crowd Report</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0d1117;color:#e0e6f0;font-family:'Segoe UI',sans-serif;padding:24px}.card{background:#111827;border:1px solid #1e2a3a;border-radius:12px;padding:20px;margin-bottom:16px}h1{color:#00e5ff;font-size:22px;margin-bottom:4px}.sub{color:#6b7280;font-size:13px}.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1e2a3a;font-size:13px}.row:last-child{border-bottom:none}.row span{color:#6b7280}.alert-box{border:1px solid #ff3c3c;background:#1a0a0a;border-radius:8px;padding:12px;color:#ff6b6b}.ok-box{border:1px solid #00e5ff;background:#0a1a1a;border-radius:8px;padding:12px;color:#00e5ff}img{width:100%;border-radius:8px;margin-top:12px}a{color:#00e5ff}</style></head><body><div class="card"><h1>👁️ CrowdVision AI Report</h1><p class="sub">${new Date().toLocaleString()}</p></div><div class="card"><div class="row"><span>YOLO Count</span><b>${personCount}</b></div><div class="row"><span>CSRNet Estimate</span><b>${densityCount}</b></div><div class="row"><span>Threshold</span><b>${threshold}</b></div><div class="row"><span>Address</span><b>${detailedAddress}</b></div><div class="row"><span>Location</span><a href="${liveLocationUrl}" target="_blank">View on Maps</a></div></div><div class="card">${isAlert?'<div class="alert-box">🚨 THRESHOLD EXCEEDED</div>':'<div class="ok-box">✅ Normal Density</div>'}</div>${snap?`<div class="card"><h3 style="margin-bottom:8px;color:#8b949e">📹 Camera Snapshot</h3><img src="${snap}"/></div>`:''} ${densityHeatmap?`<div class="card"><h3 style="margin-bottom:8px;color:#8b949e">🔥 Density Heatmap</h3><img src="${densityHeatmap}"/></div>`:''}</body></html>`
+    const html = `<!DOCTYPE html><html><head><title>Crowd Report</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0d1117;color:#e0e6f0;font-family:'Segoe UI',sans-serif;padding:24px}.card{background:#111827;border:1px solid #1e2a3a;border-radius:12px;padding:20px;margin-bottom:16px}h1{color:#00e5ff;font-size:22px;margin-bottom:4px}.sub{color:#6b7280;font-size:13px}.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1e2a3a;font-size:13px}.row:last-child{border-bottom:none}.row span{color:#6b7280}.alert-box{border:1px solid #ff3c3c;background:#1a0a0a;border-radius:8px;padding:12px;color:#ff6b6b}.ok-box{border:1px solid #00e5ff;background:#0a1a1a;border-radius:8px;padding:12px;color:#00e5ff}img{width:100%;border-radius:8px;margin-top:12px}a{color:#00e5ff}</style></head><body><div class="card"><h1>👁️ CrowdVision AI Report</h1><p class="sub">${new Date().toLocaleString()}</p></div><div class="card"><div class="row"><span>YOLO Count</span><b>${personCount}</b></div><div class="row"><span>Behaviour</span><b style="color:${behaviour.label==='NORMAL'?'#00ff88':'#ff3c3c'}">${behaviour.label} (${(behaviour.conf*100).toFixed(1)}%)</b></div><div class="row"><span>Threshold</span><b>${threshold}</b></div><div class="row"><span>Address</span><b>${detailedAddress}</b></div><div class="row"><span>Location</span><a href="${liveLocationUrl}" target="_blank">View on Maps</a></div></div><div class="card">${isAlert?'<div class="alert-box">🚨 THRESHOLD EXCEEDED</div>':'<div class="ok-box">✅ Normal Density</div>'}</div>${snap?`<div class="card"><h3 style="margin-bottom:8px;color:#8b949e">📹 Camera Snapshot</h3><img src="${snap}"/></div>`:''}</body></html>`
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }))
     a.download = `crowd-report-${Date.now()}.html`
@@ -263,7 +359,7 @@ function Dashboard() {
       <nav className="dnav">
         <div className="dnav-brand"><span>👁️</span><span className="dnav-brand-text">CrowdVision <span className="dnav-ai">AI</span></span></div>
         <div className="dnav-mid">
-          {connected && <div className="dlive" ref={fpsDomRef}>LIVE · 0 FPS</div>}
+          <div className="dlive" ref={fpsDomRef}>{cameraOn ? 'LIVE · 0 FPS' : videoMode ? 'VIDEO' : 'OFFLINE'}</div>
         </div>
         <div className="dnav-right">
           <div className={`dconn ${connected?'dconn-on':'dconn-off'}`}><span className="dconn-dot"/>{connected?'Online':'Connecting...'}</div>
@@ -275,7 +371,7 @@ function Dashboard() {
       <div className="dstats">
         {[
           { label:'YOLO Count',  val: <span ref={countStatRef}>0</span>, color: '#00e5ff' },
-          { label:'CSRNet Est.', val: densityCount,                       color:'#a78bfa' },
+          { label:'Behaviour',   val: <span style={{color: behaviour.label==='NORMAL'?'#00ff88':behaviour.label==='ABNORMAL'?'#ff3c3c':'#888'}}>{behaviour.label}</span>, color: null },
           { label:'Risk Level',  val: <span ref={riskDom2Ref} style={{color:'#00e5ff'}}>CLEAR</span>, color: null },
           { label:'Peak Hour',   val: `${analytics.peak_hour}:00`,        color:'#00e5ff' },
           { label:'Peak Count',  val: analytics.peak_count||0,            color:'#ffaa00' },
@@ -297,12 +393,15 @@ function Dashboard() {
           {/* Camera */}
           <div className="dvideo-card">
             <div className="dvideo-header">
-              <span>📹 Live Camera Feed</span>
+              <span>{videoMode ? '🎬 Video Analysis' : '📹 Live Camera Feed'}</span>
               <div className="dvideo-tags">
-                <span className="dtag dtag-gray">YOLOv8n + CSRNet</span>
-                <button className={`dtag ${paused?'dtag-red':'dtag-gray'}`} onClick={togglePause} style={{cursor:'pointer',border:'none',background:'none',color:'inherit',font:'inherit'}}>
-                  {paused ? '▶ Resume' : '⏸ Pause'}
-                </button>
+                <span className="dtag dtag-gray">YOLO11n + UCN</span>
+                {videoMode && <span className="dtag dtag-red">{videoStatus}</span>}
+                {cameraOn && !videoMode && (
+                  <button className={`dtag ${paused?'dtag-red':'dtag-gray'}`} onClick={togglePause} style={{cursor:'pointer',border:'none',background:'none',color:'inherit',font:'inherit'}}>
+                    {paused ? '▶ Resume' : '⏸ Pause'}
+                  </button>
+                )}
               </div>
             </div>
             <div className="dvideo-wrap">
@@ -310,18 +409,18 @@ function Dashboard() {
               <canvas ref={canvasRef} className="dframe-canvas" />
               {/* Bbox overlay */}
               <canvas ref={overlayRef} className="dcanvas" />
-              {!connected && (
+              {!cameraOn && !videoMode && (
                 <div className="dvideo-idle">
                   <div className="didle-icon">📷</div>
-                  <p>Connecting to camera backend...</p>
-                  <p style={{fontSize:'12px',marginTop:'8px',color:'#444'}}>ws://localhost:5000/ws</p>
+                  <p>Camera is off</p>
+                  <p style={{fontSize:'12px',marginTop:'8px',color:'#444'}}>Click "Start Camera" to begin live detection</p>
                 </div>
               )}
             </div>
             <div className="dvideo-footer">
-              <span>Confidence: 0.35</span>
-              <span>Tracker: ByteTrack</span>
-              <span>Model: YOLOv8x + CSRNet</span>
+              <span>Confidence: 0.40</span>
+              <span>Behaviour: <span style={{color: behaviour.label==='NORMAL'?'#00ff88':behaviour.label==='ABNORMAL'?'#ff3c3c':'#888'}}>{behaviour.label}</span></span>
+              <span>UCN: {(behaviour.conf*100).toFixed(0)}%</span>
             </div>
           </div>
 
@@ -420,18 +519,19 @@ function Dashboard() {
             </div>
           )}
 
-          {/* CSRNet */}
-          {densityHeatmap && (
-            <div className="dheat">
-              <div className="dheat-hd">🔥 CSRNet Density Heatmap<span className="dheat-badge">{densityCount} estimated</span></div>
-              <img src={densityHeatmap} alt="heatmap" className="dheat-img"/>
-              <div className="dheat-leg">
-                <span><b style={{color:'#00f'}}>■</b> Low</span>
-                <span><b style={{color:'#0f0'}}>■</b> Medium</span>
-                <span><b style={{color:'#f00'}}>■</b> High</span>
+          {/* Behaviour Panel */}
+          <div className="dpanel">
+            <div className="dpanel-hd">🧠 Behaviour Analysis (UCN Model)</div>
+            <div style={{padding:'16px',textAlign:'center'}}>
+              <div style={{fontSize:'32px',fontWeight:700,color:behaviour.label==='NORMAL'?'#00ff88':behaviour.label==='ABNORMAL'?'#ff3c3c':'#888',marginBottom:'8px'}}>
+                {behaviour.label==='NORMAL'?'✅':behaviour.label==='ABNORMAL'?'🚨':'❓'} {behaviour.label}
+              </div>
+              <div style={{color:'#6b7280',fontSize:'13px'}}>Confidence: {(behaviour.conf*100).toFixed(1)}%</div>
+              <div style={{marginTop:'12px',background:'#1a2035',borderRadius:'8px',height:'8px',overflow:'hidden'}}>
+                <div style={{height:'100%',width:`${behaviour.conf*100}%`,background:behaviour.label==='NORMAL'?'#00ff88':'#ff3c3c',transition:'width 0.3s'}}/>
               </div>
             </div>
-          )}
+          </div>
         </div>
 
         {/* RIGHT */}
@@ -444,8 +544,13 @@ function Dashboard() {
               <input type="number" value={threshold} min="1" max="500"
                 onChange={e=>setThreshold(parseInt(e.target.value)||1)}/>
             </div>
+            {!cameraOn && !videoMode && <button className="dbtn dbtn-start" onClick={startCamera}>📷 Start Camera</button>}
+            {cameraOn  && !videoMode && <button className="dbtn" style={{background:'#2a1a1a',color:'#ff3c3c',border:'1px solid #ff3c3c'}} onClick={stopCamera}>⏹ Stop Camera</button>}
             <button className="dbtn dbtn-start" onClick={generateReport}>📄 Report</button>
             <button className="dbtn dbtn-upload" onClick={getWeekly}>📅 Weekly</button>
+            {!videoMode && <button className="dbtn" style={{background:'#1a2a4a',color:'#00e5ff',border:'1px solid #00e5ff'}} onClick={() => fileInputRef.current?.click()}>🎬 Upload Video</button>}
+            <input ref={fileInputRef} type="file" accept="video/*" style={{display:'none'}} onChange={handleVideoUpload}/>
+            {videoMode && <button className="dbtn" style={{background:'#2a1a1a',color:'#ff3c3c',border:'1px solid #ff3c3c'}} onClick={stopVideo}>⏹ Stop Video</button>}
             {whatsappStatus && <span className="dwa">{whatsappStatus}</span>}
           </div>
 
@@ -489,10 +594,9 @@ function Dashboard() {
           <div className="dpanel">
             <div className="dpanel-hd">⚙️ System Info</div>
             {[
-              ['Detection',  'YOLOv8n'],
-              ['Tracker',    'ByteTrack'],
-              ['Density',    'CSRNet'],
-              ['Dataset',    'ShanghaiTech A'],
+              ['Detection',  'YOLO11n'],
+              ['Behaviour',  'UCN Model'],
+              ['Dataset',    'UCN (Normal/Abnormal)'],
               ['Confidence', '0.40'],
               ['Threshold',  threshold],
             ].map(([k,v])=>(

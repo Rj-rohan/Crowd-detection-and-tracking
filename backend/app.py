@@ -5,18 +5,18 @@ import base64
 import io
 import os
 import numpy as np
-import torch
-import torch.nn as nn
-import torchvision.transforms as transforms
 from PIL import Image
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from ultralytics import YOLO
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+import tempfile
 from fastapi.middleware.cors import CORSMiddleware
 from twilio.rest import Client as TwilioClient
 import uvicorn
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 
 load_dotenv()
 
@@ -39,75 +39,33 @@ TWILIO_TO    = os.getenv('TWILIO_WHATSAPP_TO')
 twilio = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
 # ── YOLO ──────────────────────────────────────────────────────────────────────
-print("Loading YOLOv8n...")
-model = YOLO('yolov8n.pt')
+print("Loading YOLO11n...")
+model = YOLO('yolo11n.pt')
 model.fuse()
 model(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
-print("YOLOv8n ready!")
+print("YOLO11n ready!")
 
-# ── CSRNet ────────────────────────────────────────────────────────────────────
-class CSRNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.frontend = nn.Sequential(
-            nn.Conv2d(3,64,3,padding=1),   nn.ReLU(inplace=True),
-            nn.Conv2d(64,64,3,padding=1),  nn.ReLU(inplace=True), nn.MaxPool2d(2,2),
-            nn.Conv2d(64,128,3,padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(128,128,3,padding=1),nn.ReLU(inplace=True), nn.MaxPool2d(2,2),
-            nn.Conv2d(128,256,3,padding=1),nn.ReLU(inplace=True),
-            nn.Conv2d(256,256,3,padding=1),nn.ReLU(inplace=True),
-            nn.Conv2d(256,256,3,padding=1),nn.ReLU(inplace=True), nn.MaxPool2d(2,2),
-            nn.Conv2d(256,512,3,padding=1),nn.ReLU(inplace=True),
-            nn.Conv2d(512,512,3,padding=1),nn.ReLU(inplace=True),
-            nn.Conv2d(512,512,3,padding=1),nn.ReLU(inplace=True),
-        )
-        self.backend = nn.Sequential(
-            nn.Conv2d(512,512,3,padding=2,dilation=2),nn.ReLU(inplace=True),
-            nn.Conv2d(512,512,3,padding=2,dilation=2),nn.ReLU(inplace=True),
-            nn.Conv2d(512,512,3,padding=2,dilation=2),nn.ReLU(inplace=True),
-            nn.Conv2d(512,256,3,padding=2,dilation=2),nn.ReLU(inplace=True),
-            nn.Conv2d(256,128,3,padding=2,dilation=2),nn.ReLU(inplace=True),
-            nn.Conv2d(128,64,3,padding=2,dilation=2), nn.ReLU(inplace=True),
-        )
-        self.output_layer = nn.Conv2d(64,1,1)
-
-    def forward(self, x):
-        return self.output_layer(self.backend(self.frontend(x)))
-
-csrnet = None
-csrnet_transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
-])
+# ── UCN Behaviour Model ───────────────────────────────────────────────────────
+ucn_model = None
 try:
-    print("Loading CSRNet...")
-    csrnet = CSRNet()
-    ckpt   = torch.load('weights/csrnet_shanghaitech.pth', map_location='cpu', weights_only=False)
-    state  = ckpt.get('state_dict', ckpt.get('model', ckpt)) if isinstance(ckpt, dict) else ckpt
-    csrnet.load_state_dict(state, strict=False)
-    csrnet.eval()
-    print("CSRNet ready!")
+    print("Loading UCN behaviour model...")
+    ucn_model = load_model('crowd_model_final.h5')
+    print("UCN model ready!")
 except Exception as e:
-    print(f"CSRNet skipped: {e}")
-    csrnet = None
+    print(f"UCN model skipped: {e}")
 
-def run_csrnet(frame_bgr):
-    if csrnet is None:
-        return None, 0
+def predict_behaviour(frame_bgr):
+    if ucn_model is None:
+        return "UNKNOWN", 0.0
     try:
-        img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)).resize((640, 480))
-        t   = csrnet_transform(img).unsqueeze(0)
-        with torch.no_grad():
-            dm = csrnet(t).squeeze().numpy()
-        count = round(float(dm.sum()))
-        norm  = dm - dm.min()
-        norm  = (norm / norm.max() * 255).astype(np.uint8) if norm.max() > 0 else norm.astype(np.uint8)
-        heatmap = cv2.applyColorMap(norm, cv2.COLORMAP_JET)
-        buf = io.BytesIO()
-        Image.fromarray(cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)).save(buf, format='JPEG', quality=60)
-        return base64.b64encode(buf.getvalue()).decode(), count
+        img   = cv2.resize(frame_bgr, (224, 224)) / 255.0
+        img   = np.expand_dims(img, axis=0).astype(np.float32)
+        score = float(ucn_model.predict(img, verbose=0)[0][0])
+        label = "NORMAL" if score > 0.5 else "ABNORMAL"
+        conf  = score if score > 0.5 else 1 - score
+        return label, round(conf, 2)
     except:
-        return None, 0
+        return "UNKNOWN", 0.0
 
 # ── Alert state ───────────────────────────────────────────────────────────────
 last_alert_time = 0
@@ -296,8 +254,7 @@ async def camera_ws(websocket: WebSocket):
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     cap.set(cv2.CAP_PROP_FPS, 30)
 
-    frame_count     = 0
-    csrnet_interval = 30  # run CSRNet every 30 frames (was 10)
+    frame_count = 0
 
     try:
         while True:
@@ -332,19 +289,18 @@ async def camera_ws(websocket: WebSocket):
             if frame_count % 30 == 0:  # was every 5 frames
                 asyncio.get_event_loop().run_in_executor(None, save_detection, count)
 
-            density_heatmap, density_count = None, 0
-            if frame_count % csrnet_interval == 0 and csrnet is not None:
-                density_heatmap, density_count = run_csrnet(frame)
+            behaviour, behaviour_conf = "UNKNOWN", 0.0
+            if frame_count % 10 == 0:
+                behaviour, behaviour_conf = predict_behaviour(frame)
 
             _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
             payload = {
-                "frame":      base64.b64encode(buf).decode(),
-                "detections": detections,
-                "count":      count
+                "frame":          base64.b64encode(buf).decode(),
+                "detections":     detections,
+                "count":          count,
+                "behaviour":      behaviour,
+                "behaviour_conf": behaviour_conf
             }
-            if density_heatmap:
-                payload["density_heatmap"] = density_heatmap
-                payload["density_count"]   = density_count
 
             await websocket.send_text(json.dumps(payload))
             await asyncio.sleep(0.033)
@@ -418,6 +374,59 @@ async def data_ws(websocket: WebSocket):
 
     except WebSocketDisconnect:
         pass
+
+# ── WebSocket: Video upload stream ───────────────────────────────────────────
+@app.websocket("/ws/video")
+async def video_ws(websocket: WebSocket):
+    await websocket.accept()
+    tmp_path = None
+    try:
+        # First message = video bytes
+        video_bytes = await websocket.receive_bytes()
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as f:
+            f.write(video_bytes)
+            tmp_path = f.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25
+        frame_count = 0
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            results = model(frame, classes=[0], conf=0.4, iou=0.5, verbose=False)
+            detections = []
+            if results[0].boxes is not None:
+                for i, box in enumerate(results[0].boxes):
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    detections.append({"id": i+1, "x": x1, "y": y1, "w": x2-x1, "h": y2-y1, "conf": round(float(box.conf[0]), 2)})
+
+            count = len(detections)
+            frame_count += 1
+
+            behaviour, behaviour_conf = "UNKNOWN", 0.0
+            if frame_count % 10 == 0:
+                behaviour, behaviour_conf = predict_behaviour(frame)
+
+            _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+            await websocket.send_text(json.dumps({
+                "frame":          base64.b64encode(buf).decode(),
+                "detections":     detections,
+                "count":          count,
+                "behaviour":      behaviour,
+                "behaviour_conf": behaviour_conf
+            }))
+            await asyncio.sleep(1 / fps)
+
+        cap.release()
+        await websocket.send_text(json.dumps({"done": True}))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5000, log_level="warning")
