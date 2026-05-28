@@ -32,6 +32,10 @@ function Dashboard() {
   const cameraOnRef  = useRef(false)
   const fpsRef       = useRef({ count: 0, last: performance.now() })
   const thresholdRef = useRef(10)
+  // Live value refs for report generation (updated every frame)
+  const liveCountRef      = useRef(0)
+  const liveDetectionsRef = useRef([])
+  const liveBehaviourRef  = useRef({ label: 'UNKNOWN', conf: 0 })
   // DOM refs for per-frame updates (avoids React re-renders)
   const countDomRef  = useRef(null)  // trend chart footer
   const countStatRef  = useRef(null)  // stat bar count
@@ -100,6 +104,10 @@ function Dashboard() {
       const dets  = data.detections || []
       const count = data.count || 0
 
+      // ── Keep live refs in sync for report generation ──
+      liveCountRef.current      = count
+      liveDetectionsRef.current = dets
+
       // ── Direct DOM updates (no React re-render) ──
       if (countDomRef.current)  countDomRef.current.textContent  = count
       if (countStatRef.current) countStatRef.current.textContent = count
@@ -124,7 +132,11 @@ function Dashboard() {
       }
 
       // Behaviour update
-      if (data.behaviour) setBehaviour({ label: data.behaviour, conf: data.behaviour_conf || 0 })
+      if (data.behaviour) {
+        const b = { label: data.behaviour, conf: data.behaviour_conf || 0 }
+        setBehaviour(b)
+        liveBehaviourRef.current = b
+      }
 
       // Draw frame
       const img = new Image()
@@ -274,11 +286,17 @@ function Dashboard() {
       const dets  = data.detections || []
       const count = data.count || 0
 
+      liveCountRef.current      = count
+      liveDetectionsRef.current = dets
       if (countDomRef.current)  countDomRef.current.textContent  = count
       if (countStatRef.current) countStatRef.current.textContent = count
       if (detHeaderRef.current) detHeaderRef.current.textContent = `👥 Active Detections (${count})`
       if (fpsDomRef.current)    fpsDomRef.current.textContent    = `VIDEO · ${count} people`
-      if (data.behaviour) setBehaviour({ label: data.behaviour, conf: data.behaviour_conf || 0 })
+      if (data.behaviour) {
+        const b = { label: data.behaviour, conf: data.behaviour_conf || 0 }
+        setBehaviour(b)
+        liveBehaviourRef.current = b
+      }
 
       const r = count === 0 ? 'CLEAR'
         : count < thresholdRef.current * 0.4  ? 'LOW'
@@ -329,17 +347,39 @@ function Dashboard() {
   }
 
   const generateReport = () => {
-    const canvas = canvasRef.current
-    const snap   = canvas ? canvas.toDataURL('image/jpeg', 0.8) : null
-    const isAlert = personCount >= threshold
-    const html = `<!DOCTYPE html><html><head><title>Crowd Report</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0d1117;color:#e0e6f0;font-family:'Segoe UI',sans-serif;padding:24px}.card{background:#111827;border:1px solid #1e2a3a;border-radius:12px;padding:20px;margin-bottom:16px}h1{color:#00e5ff;font-size:22px;margin-bottom:4px}.sub{color:#6b7280;font-size:13px}.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1e2a3a;font-size:13px}.row:last-child{border-bottom:none}.row span{color:#6b7280}.alert-box{border:1px solid #ff3c3c;background:#1a0a0a;border-radius:8px;padding:12px;color:#ff6b6b}.ok-box{border:1px solid #00e5ff;background:#0a1a1a;border-radius:8px;padding:12px;color:#00e5ff}img{width:100%;border-radius:8px;margin-top:12px}a{color:#00e5ff}</style></head><body><div class="card"><h1>👁️ CrowdVision AI Report</h1><p class="sub">${new Date().toLocaleString()}</p></div><div class="card"><div class="row"><span>YOLO Count</span><b>${personCount}</b></div><div class="row"><span>Behaviour</span><b style="color:${behaviour.label==='NORMAL'?'#00ff88':'#ff3c3c'}">${behaviour.label} (${(behaviour.conf*100).toFixed(1)}%)</b></div><div class="row"><span>Threshold</span><b>${threshold}</b></div><div class="row"><span>Address</span><b>${detailedAddress}</b></div><div class="row"><span>Location</span><a href="${liveLocationUrl}" target="_blank">View on Maps</a></div></div><div class="card">${isAlert?'<div class="alert-box">🚨 THRESHOLD EXCEEDED</div>':'<div class="ok-box">✅ Normal Density</div>'}</div>${snap?`<div class="card"><h3 style="margin-bottom:8px;color:#8b949e">📹 Camera Snapshot</h3><img src="${snap}"/></div>`:''}</body></html>`
+    // Use live refs — these always have the current frame values
+    const count   = liveCountRef.current
+    const dets    = liveDetectionsRef.current
+    const beh     = liveBehaviourRef.current
+
+    // Merge frame + overlay into one snapshot canvas
+    const frameCanvas   = canvasRef.current
+    const overlayCanvas = overlayRef.current
+    let snap = null
+    if (frameCanvas && frameCanvas.width > 0) {
+      const merged = document.createElement('canvas')
+      merged.width  = frameCanvas.width
+      merged.height = frameCanvas.height
+      const mctx = merged.getContext('2d')
+      mctx.drawImage(frameCanvas, 0, 0)
+      if (overlayCanvas) mctx.drawImage(overlayCanvas, 0, 0)
+      snap = merged.toDataURL('image/jpeg', 0.9)
+    }
+
+    const isAlert = count >= thresholdRef.current
+    const detRows = dets.map(d =>
+      `<div class="det-row"><span class="det-id">ID ${d.id}</span><span class="det-conf">${(d.conf*100).toFixed(0)}% confidence</span></div>`
+    ).join('')
+
+    const html = `<!DOCTYPE html><html><head><title>Crowd Report</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0d1117;color:#e0e6f0;font-family:'Segoe UI',sans-serif;padding:24px}.card{background:#111827;border:1px solid #1e2a3a;border-radius:12px;padding:20px;margin-bottom:16px}h1{color:#00e5ff;font-size:22px;margin-bottom:4px}.sub{color:#6b7280;font-size:13px}.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1e2a3a;font-size:13px}.row:last-child{border-bottom:none}.row span{color:#6b7280}.alert-box{border:1px solid #ff3c3c;background:#1a0a0a;border-radius:8px;padding:12px;color:#ff6b6b}.ok-box{border:1px solid #00e5ff;background:#0a1a1a;border-radius:8px;padding:12px;color:#00e5ff}img{width:100%;border-radius:8px;margin-top:12px}a{color:#00e5ff}.det-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e2a3a;font-size:12px}.det-row:last-child{border-bottom:none}.det-id{color:#00e5ff;font-weight:700;font-family:monospace}.det-conf{color:#6b7280}</style></head><body><div class="card"><h1>👁️ CrowdVision AI Report</h1><p class="sub">${new Date().toLocaleString()}</p></div><div class="card"><div class="row"><span>YOLO Count</span><b style="color:#00e5ff">${count}</b></div><div class="row"><span>Behaviour</span><b style="color:${beh.label==='NORMAL'?'#00ff88':'#ff3c3c'}">${beh.label} (${(beh.conf*100).toFixed(1)}%)</b></div><div class="row"><span>Threshold</span><b>${thresholdRef.current}</b></div><div class="row"><span>Address</span><b>${detailedAddress}</b></div><div class="row"><span>Location</span><a href="${liveLocationUrl}" target="_blank">View on Maps</a></div></div><div class="card">${isAlert?'<div class="alert-box">🚨 THRESHOLD EXCEEDED</div>':'<div class="ok-box">✅ Normal Density</div>'}</div>${dets.length>0?`<div class="card"><h3 style="margin-bottom:12px;color:#8b949e">👥 Detected Persons (${count})</h3>${detRows}</div>`:''} ${snap?`<div class="card"><h3 style="margin-bottom:8px;color:#8b949e">📹 Camera Snapshot (with detections)</h3><img src="${snap}"/></div>`:''}</body></html>`
+
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }))
     a.download = `crowd-report-${Date.now()}.html`
     a.click()
     dataWsRef.current?.send(JSON.stringify({
       action: 'send_report',
-      report: { timestamp: new Date().toLocaleString(), detailedAddress, liveLocationUrl, densityCount: personCount, threshold }
+      report: { timestamp: new Date().toLocaleString(), detailedAddress, liveLocationUrl, densityCount: count, threshold: thresholdRef.current }
     }))
   }
 
