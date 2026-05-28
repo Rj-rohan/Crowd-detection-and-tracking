@@ -136,8 +136,8 @@ function Dashboard() {
           : dets.map(d => `<div class="ddet-row"><span class="ddet-id">ID ${d.id}</span><div class="ddet-bar-wrap"><div class="ddet-bar" style="width:${d.conf*100}%"></div></div><span class="ddet-pct">${(d.conf*100).toFixed(0)}%</span></div>`).join('')
       }
 
-      // Behaviour update
-      if (data.behaviour) {
+      // Behaviour update — only update if not UNKNOWN
+      if (data.behaviour && data.behaviour !== 'UNKNOWN') {
         const b = { label: data.behaviour, conf: data.behaviour_conf || 0 }
         setBehaviour(b)
         liveBehaviourRef.current = b
@@ -321,7 +321,7 @@ function Dashboard() {
       if (countStatRef.current) countStatRef.current.textContent = count
       if (detHeaderRef.current) detHeaderRef.current.textContent = `👥 Active Detections (${count})`
       if (fpsDomRef.current)    fpsDomRef.current.textContent    = `VIDEO · ${count} people`
-      if (data.behaviour) {
+      if (data.behaviour && data.behaviour !== 'UNKNOWN') {
         const b = { label: data.behaviour, conf: data.behaviour_conf || 0 }
         setBehaviour(b)
         liveBehaviourRef.current = b

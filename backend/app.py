@@ -53,7 +53,7 @@ print("YOLO11n ready!")
 ucn_model = None
 try:
     print("Loading UCN behaviour model...")
-    ucn_model = load_model('crowd_model_final.h5')
+    ucn_model = load_model('crowd_model_final.h5', compile=False)
     print("UCN model ready!")
 except Exception as e:
     print(f"UCN model skipped: {e}")
@@ -74,6 +74,7 @@ def predict_behaviour(frame_bgr):
 # Alert state with thread lock to prevent race condition
 last_alert_time = 0
 ALERT_COOLDOWN  = 60
+ALERT_ENABLED   = True   # set False to disable WhatsApp alerts temporarily
 _alert_lock     = threading.Lock()
 
 # MongoDB helpers
@@ -92,6 +93,9 @@ def save_detection(count):
 
 def send_whatsapp_alert(count, threshold, address='Unknown', maps_url=''):
     global last_alert_time
+    if not ALERT_ENABLED:
+        print(f"[ALERT] Disabled. Would have sent: Count={count}/{threshold}")
+        return False
     with _alert_lock:
         now = datetime.now().timestamp()
         if now - last_alert_time < ALERT_COOLDOWN:
@@ -132,6 +136,8 @@ def send_whatsapp_alert(count, threshold, address='Unknown', maps_url=''):
 
 def send_stampede_alert(count, density, risk_level, address='Unknown', maps_url=''):
     global last_alert_time
+    if not ALERT_ENABLED:
+        return False
     with _alert_lock:
         now = datetime.now().timestamp()
         if now - last_alert_time < ALERT_COOLDOWN:
@@ -286,7 +292,7 @@ async def camera_ws(websocket: WebSocket):
             count = len(detections)
             frame_count += 1
 
-            if frame_count % 30 == 0:
+            if frame_count % 5 == 0:
                 asyncio.get_event_loop().run_in_executor(None, save_detection, count)
 
             behaviour, behaviour_conf = "UNKNOWN", 0.0
