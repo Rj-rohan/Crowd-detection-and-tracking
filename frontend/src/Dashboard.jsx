@@ -354,6 +354,34 @@ function Dashboard() {
         drawHeatmap(dets, img.naturalWidth, img.naturalHeight)
       }
       img.src = `data:image/jpeg;base64,${data.frame}`
+
+      // Auto alert for video mode
+      if (count >= thresholdRef.current) {
+        const now = Date.now()
+        const status = count >= thresholdRef.current * 1.5 ? 'CRITICAL' : 'ALERT'
+        setAlertHistory(prev => {
+          if (prev[0]?.time === new Date().toLocaleTimeString()) return prev
+          return [{
+            time:     new Date().toLocaleTimeString(),
+            count,
+            location: 'Video Upload',
+            status,
+            action:   'Auto detected'
+          }, ...prev.slice(0, 29)]
+        })
+        if (now - lastAlertSentRef.current >= 60000) {
+          lastAlertSentRef.current = now
+          if (dataWsRef.current?.readyState === WebSocket.OPEN) {
+            dataWsRef.current.send(JSON.stringify({
+              action:    'threshold_alert',
+              count,
+              threshold: thresholdRef.current,
+              address:   detailedAddressRef.current,
+              maps_url:  liveLocationUrlRef.current
+            }))
+          }
+        }
+      }
     }
     ws.onclose = () => { setVideoStatus(v => v === 'Processing...' ? 'Stopped' : v) }
     // reset file input so same file can be re-uploaded
