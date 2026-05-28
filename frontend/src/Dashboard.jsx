@@ -31,7 +31,10 @@ function Dashboard() {
   const pausedRef    = useRef(false)
   const cameraOnRef  = useRef(false)
   const fpsRef       = useRef({ count: 0, last: performance.now() })
-  const thresholdRef = useRef(10)
+  const thresholdRef       = useRef(10)
+  const lastAlertSentRef   = useRef(0)
+  const detailedAddressRef = useRef('Locating...')
+  const liveLocationUrlRef = useRef('')
   // Live value refs for report generation (updated every frame)
   const liveCountRef      = useRef(0)
   const liveDetectionsRef = useRef([])
@@ -49,6 +52,8 @@ function Dashboard() {
 
   useEffect(() => { thresholdRef.current = threshold }, [threshold])
   useEffect(() => { cameraOnRef.current = cameraOn }, [cameraOn])
+  useEffect(() => { detailedAddressRef.current = detailedAddress }, [detailedAddress])
+  useEffect(() => { liveLocationUrlRef.current = liveLocationUrl }, [liveLocationUrl])
 
   useEffect(() => {
     const tick = setInterval(() => setTime(new Date().toLocaleTimeString()), 1000)
@@ -153,18 +158,38 @@ function Dashboard() {
 
       // Auto alert
       if (count >= thresholdRef.current) {
-        setAlertHistory(prev => [{
-          time: new Date().toLocaleTimeString(),
-          count,
-          location: 'Live Camera',
-          status: count >= thresholdRef.current * 1.5 ? 'CRITICAL' : 'ALERT',
-          action: 'Auto detected'
-        }, ...prev.slice(0, 29)])
-        dataWsRef.current?.send(JSON.stringify({
-          action: 'threshold_alert', count,
-          threshold: thresholdRef.current,
-          address: detailedAddress, maps_url: liveLocationUrl
-        }))
+        const now = Date.now()
+        const status = count >= thresholdRef.current * 1.5 ? 'CRITICAL' : 'ALERT'
+        // Always add to local alert history for immediate UI feedback
+        setAlertHistory(prev => {
+          if (prev[0]?.time === new Date().toLocaleTimeString()) return prev
+          return [{
+            time:     new Date().toLocaleTimeString(),
+            count,
+            location: 'Live Camera',
+            status,
+            action:   'Auto detected'
+          }, ...prev.slice(0, 29)]
+        })
+        // Send WhatsApp only once per 60s (frontend cooldown)
+        if (now - lastAlertSentRef.current >= 60000) {
+          lastAlertSentRef.current = now
+          console.log('[ALERT] Sending threshold_alert to backend, count=', count)
+          console.log('[ALERT] dataWsRef state=', dataWsRef.current?.readyState)
+          const payload = JSON.stringify({
+            action:    'threshold_alert',
+            count,
+            threshold: thresholdRef.current,
+            address:   detailedAddressRef.current,
+            maps_url:  liveLocationUrlRef.current
+          })
+          if (dataWsRef.current?.readyState === WebSocket.OPEN) {
+            dataWsRef.current.send(payload)
+            console.log('[ALERT] Sent successfully')
+          } else {
+            console.log('[ALERT] dataWs not open, state=', dataWsRef.current?.readyState)
+          }
+        }
       }
     }
   }
@@ -179,7 +204,7 @@ function Dashboard() {
       ws.send(JSON.stringify({ action: 'get_daily' }))
       ws.send(JSON.stringify({ action: 'get_alerts' }))
     }
-    ws.onclose = () => setTimeout(connectData, 3000)
+
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data)
       if (msg.type === 'analytics') setAnalytics(msg.data)
@@ -187,14 +212,16 @@ function Dashboard() {
       if (msg.type === 'weekly')    setWeeklyReport(msg.data)
       if (msg.type === 'alerts')    setAlertHistory(msg.data)
       if (msg.type === 'alert_sent' || msg.type === 'stampede_sent') {
-        setWhatsappStatus(msg.success ? '🚨 Alert sent!' : '❌ Alert failed')
-        setTimeout(() => setWhatsappStatus(''), 4000)
+        setWhatsappStatus(msg.success ? '🚨 WhatsApp alert sent!' : '❌ Alert failed')
+        setTimeout(() => setWhatsappStatus(''), 5000)
       }
       if (msg.type === 'report_sent') {
-        setWhatsappStatus(msg.success ? '✅ Report sent!' : '❌ Report failed')
-        setTimeout(() => setWhatsappStatus(''), 4000)
+        setWhatsappStatus(msg.success ? '✅ Report sent to WhatsApp!' : '❌ Report failed')
+        setTimeout(() => setWhatsappStatus(''), 5000)
       }
     }
+
+    ws.onclose = () => setTimeout(connectData, 3000)
 
     // Poll every 5s
     const iv = setInterval(() => {
@@ -204,7 +231,9 @@ function Dashboard() {
         ws.send(JSON.stringify({ action: 'get_alerts' }))
       }
     }, 5000)
-    ws.onclose = () => { clearInterval(iv); setTimeout(connectData, 3000) }
+
+    // store interval so we can clear it on close
+    ws.addEventListener('close', () => clearInterval(iv))
   }
 
   // ── Draw overlay (bboxes) ─────────────────────────────────────────────────

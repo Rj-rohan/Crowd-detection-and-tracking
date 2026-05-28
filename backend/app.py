@@ -36,6 +36,9 @@ TWILIO_SID   = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_FROM  = os.getenv('TWILIO_WHATSAPP_FROM')
 TWILIO_TO    = os.getenv('TWILIO_WHATSAPP_TO')
+print(f"[TWILIO] SID={TWILIO_SID}")
+print(f"[TWILIO] FROM={TWILIO_FROM}")
+print(f"[TWILIO] TO={TWILIO_TO}")
 twilio = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
 
 # ── YOLO ──────────────────────────────────────────────────────────────────────
@@ -89,9 +92,11 @@ def send_whatsapp_alert(count, threshold, address='Unknown', maps_url=''):
     global last_alert_time
     now = datetime.now().timestamp()
     if now - last_alert_time < ALERT_COOLDOWN:
+        print(f"[ALERT] Cooldown active, skipping. {int(ALERT_COOLDOWN - (now - last_alert_time))}s remaining.")
         return False
+    print(f"[ALERT] Sending WhatsApp... FROM={TWILIO_FROM} TO={TWILIO_TO} SID={TWILIO_SID}")
     try:
-        twilio.messages.create(
+        msg = twilio.messages.create(
             body=(
                 f"🚨 CROWD ALERT DETECTED\n\n"
                 f"👥 Count: {count}/{threshold}\n"
@@ -102,6 +107,7 @@ def send_whatsapp_alert(count, threshold, address='Unknown', maps_url=''):
             ),
             from_=TWILIO_FROM, to=TWILIO_TO
         )
+        print(f"[ALERT] WhatsApp sent! SID={msg.sid} Status={msg.status}")
         last_alert_time = now
         alerts_col.insert_one({
             'timestamp': datetime.now(),
@@ -117,7 +123,7 @@ def send_whatsapp_alert(count, threshold, address='Unknown', maps_url=''):
         )
         return True
     except Exception as e:
-        print(f"WhatsApp error: {e}")
+        print(f"[ALERT ERROR] {type(e).__name__}: {e}")
         return False
 
 def send_stampede_alert(count, density, risk_level, address='Unknown', maps_url=''):
@@ -348,6 +354,8 @@ async def data_ws(websocket: WebSocket):
                         data.get('maps_url', '')
                     )
                     await websocket.send_text(json.dumps({'type': 'alert_sent', 'success': success}))
+                    # Push fresh alerts list so UI updates immediately
+                    await websocket.send_text(json.dumps({'type': 'alerts', 'data': get_alerts_data()}))
 
                 elif action == 'stampede_alert':
                     success = await asyncio.get_event_loop().run_in_executor(
@@ -359,6 +367,7 @@ async def data_ws(websocket: WebSocket):
                         data.get('maps_url', '')
                     )
                     await websocket.send_text(json.dumps({'type': 'stampede_sent', 'success': success}))
+                    await websocket.send_text(json.dumps({'type': 'alerts', 'data': get_alerts_data()}))
 
                 elif action == 'send_report':
                     success = await asyncio.get_event_loop().run_in_executor(
@@ -426,7 +435,10 @@ async def video_ws(websocket: WebSocket):
         pass
     finally:
         if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass  # Windows: file still locked, ignore
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5000, log_level="warning")
